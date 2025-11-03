@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>67 Kidifier</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; margin: 18px; color:#222; }
+    .row { display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap; }
+    #controls { width:320px; }
+    canvas { border:1px solid #ddd; max-width:calc(100vw - 380px); height:auto; background:#fff; }
+    label { display:block; margin-top:8px; font-size:13px; color:#333; }
+    input[type="range"] { width:100%; }
+    button { margin-top:10px; padding:8px 12px; cursor:pointer; }
+    #drop { border:2px dashed #ccc; border-radius:8px; padding:12px; text-align:center; color:#666; margin-top:10px; }
+    #drop.hover { border-color:#888; color:#444; background:#fafafa; }
+    footer { margin-top:18px; font-size:13px; color:#666; }
+    .small { font-size:12px; color:#555; margin-top:8px; }
+  </style>
+</head>
+<body>
+  <h3>67 Kidifier</h3>
+  <div class="row">
+    <div id="controls">
+      <input id="imgfile" type="file" accept="image/*" style="display:none">
+      <button id="uploadBtn">Upload Screenshot</button>
+
+      <div id="drop">Or drag & drop an image here</div>
+
+      <label>Left eye scale <input id="leftScale" type="range" min="0.6" max="2.0" step="0.05" value="1.5"></label>
+      <label>Left eye dx <input id="leftDx" type="range" min="-60" max="60" step="1" value="-10"></label>
+      <label>Left eye dy <input id="leftDy" type="range" min="-60" max="60" step="1" value="-5"></label>
+
+      <label>Right eye scale <input id="rightScale" type="range" min="0.5" max="1.5" step="0.05" value="0.85"></label>
+      <label>Right eye dx <input id="rightDx" type="range" min="-60" max="60" step="1" value="18"></label>
+      <label>Right eye dy <input id="rightDy" type="range" min="-60" max="60" step="1" value="12"></label>
+
+      <label>Mouth scaleX <input id="mouthScaleX" type="range" min="0.6" max="2.0" step="0.05" value="1.4"></label>
+      <label>Mouth scaleY <input id="mouthScaleY" type="range" min="0.6" max="1.4" step="0.05" value="0.9"></label>
+      <label>Mouth dy <input id="mouthDy" type="range" min="-60" max="60" step="1" value="8"></label>
+
+      <div style="display:flex; gap:8px;">
+        <button id="processBtn">Process</button>
+        <button id="downloadBtn">Download PNG</button>
+      </div>
+
+      <div class="small">Tip: drag a screenshot or click Upload Screenshot. Use sliders to tune the effect.</div>
+    </div>
+
+    <div>
+      <canvas id="canvas" width="640" height="480"></canvas>
+    </div>
+  </div>
+
+  <footer>Client-side face transform using TensorFlow.js face-landmarks-detection.</footer>
+
+  <!-- TensorFlow.js and face-landmarks-detection from CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@4.11.1/dist/tf-core.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@4.11.1/dist/tf-backend-webgl.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection@1.0.2/dist/face-landmarks-detection.min.js"></script>
+
+  <script>
+  const PALETTE = [
+    [28,35,85],
+    [230,90,60],
+    [250,210,110],
+    [160,180,210],
+    [100,60,40],
+    [245,245,245]
+  ];
+
+  let model = null;
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+  function drawImageToCanvas(img) {
+    const maxW = 1280;
+    let w = img.width, h = img.height;
+    if (Math.max(w,h) > maxW) {
+      const scale = maxW / Math.max(w,h);
+      w = Math.round(w * scale);
+      h = Math.round(h * scale);
+    }
+    canvas.width = w;
+    canvas.height = h;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(img,0,0,w,h);
+  }
+
+  async function loadModel() {
+    if (model) return model;
+    await tf.setBackend('webgl');
+    model = await faceLandmarksDetection.load(faceLandmarksDetection.SupportedPackages.mediapipeFacemesh, { maxFaces: 1 });
+    return model;
+  }
+
+  function polyBBox(points) {
+    const xs = points.map(p => p[0]);
+    const ys = points.map(p => p[1]);
+    const x = Math.min(...xs), y = Math.min(...ys);
+    const w = Math.max(...xs) - x, h = Math.max(...ys) - y;
+    return {x:Math.floor(x), y:Math.floor(y), w:Math.ceil(w), h:Math.ceil(h)};
+  }
+
+  function applyLocalWarp(srcCtx, destCtx, poly, scaleX, scaleY, dx, dy) {
+    const bb = polyBBox(poly);
+    if (bb.w <= 2 || bb.h <= 2) return;
+    const pad = Math.round(Math.max(bb.w, bb.h) * 0.35);
+    const sx = Math.max(0, bb.x - pad);
+    const sy = Math.max(0, bb.y - pad);
+    const sw = Math.min(srcCtx.canvas.width - sx, bb.w + pad*2);
+    const sh = Math.min(srcCtx.canvas.height - sy, bb.h + pad*2);
+
+    const tmp = document.createElement('canvas');
+    tmp.width = sw; tmp.height = sh;
+    const tctx = tmp.getContext('2d');
+    tctx.drawImage(srcCtx.canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+
+    const out = document.createElement('canvas');
+    out.width = Math.round(sw * Math.abs(scaleX));
+    out.height = Math.round(sh * Math.abs(scaleY));
+    const octx = out.getContext('2d');
+    octx.scale(scaleX, scaleY);
+    octx.drawImage(tmp, 0, 0);
+
+    const cx = Math.round(poly.reduce((s,p)=>s+p[0],0)/poly.length);
+    const cy = Math.round(poly.reduce((s,p)=>s+p[1],0)/poly.length);
+    const destX = Math.round(cx - (out.width/scaleX)/2 + dx);
+    const destY = Math.round(cy - (out.height/scaleY)/2 + dy);
+
+    // create mask for polygon at patch size
+    const mask = document.createElement('canvas');
+    mask.width = out.width; mask.height = out.height;
+    const mctx = mask.getContext('2d');
+    mctx.fillStyle = 'black';
+    mctx.fillRect(0,0,mask.width,mask.height);
+    mctx.beginPath();
+    for (let i=0;i<poly.length;i++) {
+      const px = (poly[i][0]-cx) * scaleX + mask.width/2;
+      const py = (poly[i][1]-cy) * scaleY + mask.height/2;
+      if (i===0) mctx.moveTo(px,py); else mctx.lineTo(px,py);
+    }
+    mctx.closePath();
+    mctx.fillStyle='white';
+    mctx.fill();
+
+    const patch = document.createElement('canvas');
+    patch.width = out.width; patch.height = out.height;
+    const pctx = patch.getContext('2d');
+    pctx.drawImage(out, 0, 0, out.width, out.height);
+    pctx.globalCompositeOperation = 'destination-in';
+    pctx.drawImage(mask, 0, 0);
+
+    destCtx.drawImage(patch, destX, destY, patch.width, patch.height);
+  }
+
+  function posterizeToPalette(ctx, palette) {
+    const w = ctx.canvas.width, h = ctx.canvas.height;
+    const id = ctx.getImageData(0,0,w,h);
+    const data = id.data;
+    for (let i=0;i<data.length;i+=4) {
+      const r = data[i], g = data[i+1], b = data[i+2];
+      let best = 0, bestDist = 1e9;
+      for (let pi=0; pi<palette.length; pi++) {
+        const [pr,pg,pb] = palette[pi];
+        const dr = r-pr, dg = g-pg, db = b-pb;
+        const d = dr*dr+dg*dg+db*db;
+        if (d < bestDist) { bestDist = d; best = pi; }
+      }
+      const [nr,ng,nb] = palette[best];
+      data[i]=nr; data[i+1]=ng; data[i+2]=nb;
+    }
+    ctx.putImageData(id,0,0);
+  }
+
+  function applyGlobalWarp(ctx) {
+    const w = ctx.canvas.width, h = ctx.canvas.height;
+    const src = ctx.getImageData(0,0,w,h);
+    const out = ctx.createImageData(w,h);
+    const data = src.data, outd = out.data;
+    for (let y=0;y<h;y++) {
+      const shiftX = Math.round(6 * Math.sin((y / h) * Math.PI * 2));
+      for (let x=0;x<w;x++) {
+        const sx = Math.min(w-1, Math.max(0, x + shiftX));
+        const si = (y * w + sx) * 4;
+        const oi = (y * w + x) * 4;
+        outd[oi] = data[si]; outd[oi+1] = data[si+1]; outd[oi+2] = data[si+2]; outd[oi+3] = data[si+3];
+      }
+    }
+    ctx.putImageData(out,0,0);
+  }
+
+  async function processImage() {
+    await loadModel();
+    const imgDataUrl = canvas.toDataURL('image/png');
+    const img = new Image();
+    await new Promise(res => { img.onload = res; img.src = imgDataUrl; });
+
+    const base = document.createElement('canvas');
+    base.width = canvas.width; base.height = canvas.height;
+    const baseCtx = base.getContext('2d');
+    baseCtx.drawImage(img,0,0);
+
+    const predictions = await model.estimateFaces({ input: base });
+
+    if (!predictions || predictions.length === 0) {
+      applyGlobalWarp(baseCtx);
+      posterizeToPalette(baseCtx, PALETTE);
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      ctx.drawImage(base,0,0);
+      return;
+    }
+
+    const keypoints = predictions[0].scaledMesh;
+
+    function polyFromIndices(indices) { return indices.map(i => [ keypoints[i][0], keypoints[i][1] ]); }
+
+    const leftEyeIdx = [33, 133, 159, 145, 153, 154, 155];
+    const rightEyeIdx = [362, 263, 386, 374, 380, 381, 382];
+    const mouthIdx = [61, 291, 78, 308, 191, 80, 82];
+
+    const dest = document.createElement('canvas');
+    dest.width = canvas.width; dest.height = canvas.height;
+    const destCtx = dest.getContext('2d');
+    destCtx.drawImage(base, 0, 0);
+
+    const leftScale = parseFloat(document.getElementById('leftScale').value);
+    const leftDx = parseInt(document.getElementById('leftDx').value,10);
+    const leftDy = parseInt(document.getElementById('leftDy').value,10);
+    const rightScale = parseFloat(document.getElementById('rightScale').value);
+    const rightDx = parseInt(document.getElementById('rightDx').value,10);
+    const rightDy = parseInt(document.getElementById('rightDy').value,10);
+    const mouthScaleX = parseFloat(document.getElementById('mouthScaleX').value);
+    const mouthScaleY = parseFloat(document.getElementById('mouthScaleY').value);
+    const mouthDy = parseInt(document.getElementById('mouthDy').value,10);
+
+    applyLocalWarp(baseCtx, destCtx, polyFromIndices(leftEyeIdx), leftScale, leftScale, leftDx, leftDy);
+    applyLocalWarp(baseCtx, destCtx, polyFromIndices(rightEyeIdx), rightScale, rightScale, rightDx, rightDy);
+    applyLocalWarp(baseCtx, destCtx, polyFromIndices(mouthIdx), mouthScaleX, mouthScaleY, 0, mouthDy);
+
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(dest,0,0);
+
+    applyGlobalWarp(ctx);
+    posterizeToPalette(ctx, PALETTE);
+  }
+
+  // Upload button + file input
+  const fileInput = document.getElementById('imgfile');
+  document.getElementById('uploadBtn').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    const img = new Image();
+    img.onload = () => { drawImageToCanvas(img); URL.revokeObjectURL(url); };
+    img.src = url;
+  });
+
+  // Drag & drop
+  const drop = document.getElementById('drop');
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('hover'); });
+  drop.addEventListener('dragleave', (e) => { drop.classList.remove('hover'); });
+  drop.addEventListener('drop', (e) => {
+    e.preventDefault(); drop.classList.remove('hover');
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    const img = new Image();
+    img.onload = () => { drawImageToCanvas(img); URL.revokeObjectURL(url); };
+    img.src = url;
+  });
+
+  document.getElementById('processBtn').addEventListener('click', async () => {
+    try {
+      document.getElementById('processBtn').disabled = true;
+      await processImage();
+    } catch (err) {
+      console.error(err);
+      alert('Processing failed: ' + (err && err.message ? err.message : err));
+    } finally {
+      document.getElementById('processBtn').disabled = false;
+    }
+  });
+
+  document.getElementById('downloadBtn').addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = '67kid.png';
+    a.click();
+  });
+
+  // Preload model in background
+  loadModel().catch(err => console.warn('Model load failed', err));
+  </script>
+</body>
+</html>
