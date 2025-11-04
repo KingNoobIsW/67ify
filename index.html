@@ -1,21 +1,32 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>67ify - Meme Generator</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>67ify — Obamify-style Meme Generator</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <h1>67ify 🤪</h1>
-  <p>Upload any photo and we’ll 67ify it!</p>
+  <main>
+    <h1>67ify</h1>
+    <p class="hint">Upload a photo — the 67 kid will replace the face. Drag to move, scroll to scale.</p>
 
-  <input type="file" id="upload" accept="image/*" />
-  <canvas id="canvas"></canvas>
-  <br />
-  <button id="download">Download Result</button>
+    <div class="controls">
+      <input id="fileInput" type="file" accept="image/*" />
+      <button id="autoPlace">Auto place</button>
+      <button id="reset">Reset placement</button>
+      <button id="download">Download PNG</button>
+    </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2"></script>
+    <div class="canvas-wrap">
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <div id="status">Loading face models…</div>
+  </main>
+
+  <!-- face-api.js -->
+  <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
   <script src="script.js"></script>
 </body>
 </html>
