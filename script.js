@@ -29,7 +29,7 @@ uploadInput.addEventListener("change", async (event) => {
     );
 
     const kid = new Image();
-    kid.src = "kid.png";
+    kid.src = "kid.jpg";
 
     kid.onload = () => {
       detections.forEach(det => {
